@@ -1,19 +1,23 @@
-from langchain import PromptTemplate, LLMChain
+from langchain import PromptTemplate
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.document_loaders import PyPDFLoader
-from langchain.vectorstores import FAISS
-from langchain.chains import ConversationalRetrievalChain
+
+# from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
-import os
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 
 
 class BaseTeacher:
-    def __init__(self, topic_prompt_template, chat_prompt_template, llm=None):
+    def __init__(
+        self, topic_prompt_template, chat_prompt_template, llm=None, retriever=None
+    ):
         if llm is None:
             # Inicializar el modelo de lenguaje con los parámetros deseados
             raise ValueError("Por favor, proporciona un modelo de lenguaje.")
         self.llm = llm
+        if retriever is None:
+            # Inicializar el modelo de lenguaje con los parámetros deseados
+            raise ValueError("Por favor, proporciona un retriever.")
         self.topic_prompt = PromptTemplate(
             input_variables=["topic"],
             template=topic_prompt_template,
@@ -35,7 +39,7 @@ class BaseTeacher:
             memory_key="chat_history", return_messages=True
         )
         # Inicializar retriever y cadena para RAG
-        self.retriever = None
+        self.retriever = retriever
         self.qa_chain = None
 
     def teach(self, topic):
@@ -50,25 +54,28 @@ class BaseTeacher:
         """
         return self.chat_chain.invoke(user_input)
 
-    def setup_knowledge_base(self, pdf_paths):
+    @staticmethod
+    def format_docs(docs):
+        return "\n\n".join([d.page_content for d in docs])
+
+    def setup_knowledge_base(self):
         """
         Configura el RAG utilizando una lista de rutas a archivos PDF.
         """
-        # Cargar y combinar documentos
-        documents = []
-        for pdf_path in pdf_paths:
-            loader = PyPDFLoader(pdf_path)
-            documents.extend(loader.load_and_split())
-        # Crear embeddings y vectorstore
-        embeddings = None  # OpenAIEmbeddings()
-        vectorstore = FAISS.from_documents(documents, embeddings)
-        # Configurar retriever
-        self.retriever = vectorstore.as_retriever()
         # Configurar cadena de QA con memoria
-        self.qa_chain = ConversationalRetrievalChain.from_llm(
-            llm=self.llm,
-            retriever=self.retriever,
-            memory=self.memory,
+        template = """Answer the question based only on the following context:
+        {context}
+        Question: {question}
+        """
+        prompt = ChatPromptTemplate.from_template(template)
+        self.qa_chain = (
+            {
+                "context": self.retriever | self.format_docs,
+                "question": RunnablePassthrough(),
+            }
+            | prompt
+            | self.llm
+            | StrOutputParser()
         )
 
     def chat_with_knowledge_base(self, user_input):
@@ -79,5 +86,5 @@ class BaseTeacher:
             raise ValueError(
                 "Base de conocimiento no configurada. Por favor, llama a setup_knowledge_base primero."
             )
-        result = self.qa_chain({"question": user_input})
-        return result["answer"]
+
+        return self.qa_chain.invoke(user_input)
